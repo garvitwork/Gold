@@ -1,0 +1,14 @@
+# FastAPI Backend Requirements
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# Data fetching and analysis
+yfinance==0.2.36
+pandas==2.2.0
+numpy==1.26.3
+requests==2.31.0
+
+# Optional for production deployment
+python-multipart==0.0.6
+gunicorn==21.2.0
