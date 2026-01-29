@@ -1,7 +1,7 @@
 # FastAPI Backend Requirements
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-pydantic==2.5.3
+pydantic>=2.10.0   # ← updated here
 
 # Data fetching and analysis
 yfinance==0.2.36
