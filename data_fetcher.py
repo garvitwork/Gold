@@ -1,6 +1,6 @@
 """
 Data fetching module for Gold/Silver Price Prediction App
-Uses yfinance API exclusively
+Uses yfinance API with improved rate limiting and retry logic
 """
 
 import yfinance as yf
@@ -17,42 +17,75 @@ class DataFetcher:
     
     def __init__(self):
         self.fred_base = "https://api.stlouisfed.org/fred/series/observations"
+        self.cache = {}  # Simple in-memory cache
+        self.cache_timeout = 300  # 5 minutes cache
         
-    def get_yahoo_data(self, ticker, period='1y', interval='1d'):
-        """Fetch data from Yahoo Finance with proper error handling"""
-        try:
-            # Add delay to avoid rate limiting
-            time.sleep(0.5)
-            
-            # Download data with proper parameters
-            data = yf.download(
-                ticker, 
-                period=period, 
-                interval=interval,
-                progress=False
-            )
-            
-            if not data.empty and 'Close' in data.columns:
-                data.index = pd.to_datetime(data.index)
-                if data.index.tz is not None:
-                    data.index = data.index.tz_localize(None)
-                return data[['Close']].rename(columns={'Close': ticker})
-            
-            # If download failed, try Ticker method
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period, interval=interval)
-            
-            if not hist.empty:
-                if hist.index.tz is not None:
-                    hist.index = hist.index.tz_localize(None)
-                return hist[['Close']].rename(columns={'Close': ticker})
-            
-            print(f"⚠️ No data available for {ticker}")
-            return pd.DataFrame()
-            
-        except Exception as e:
-            print(f"Error fetching {ticker}: {str(e)}")
-            return pd.DataFrame()
+    def get_yahoo_data(self, ticker, period='1y', interval='1d', retries=3):
+        """Fetch data from Yahoo Finance with proper error handling and retry logic"""
+        # Check cache first
+        cache_key = f"{ticker}_{period}_{interval}"
+        if cache_key in self.cache:
+            cached_data, cached_time = self.cache[cache_key]
+            if time.time() - cached_time < self.cache_timeout:
+                print(f"🔄 Using cached data for {ticker}")
+                return cached_data
+        
+        for attempt in range(retries):
+            try:
+                # Increase delay between requests to avoid rate limiting
+                time.sleep(1.5 + (attempt * 1))  # Progressive backoff: 1.5s, 2.5s, 3.5s
+                
+                # Try Ticker method first (more reliable)
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period=period, interval=interval)
+                
+                if not hist.empty and 'Close' in hist.columns:
+                    if hist.index.tz is not None:
+                        hist.index = hist.index.tz_localize(None)
+                    result = hist[['Close']].rename(columns={'Close': ticker})
+                    print(f"✅ {ticker}: Fetched {len(hist)} data points")
+                    
+                    # Cache the result
+                    self.cache[cache_key] = (result, time.time())
+                    return result
+                
+                # If Ticker method failed, try download method
+                time.sleep(1)
+                data = yf.download(
+                    ticker, 
+                    period=period, 
+                    interval=interval,
+                    progress=False,
+                    show_errors=False
+                )
+                
+                if not data.empty and 'Close' in data.columns:
+                    data.index = pd.to_datetime(data.index)
+                    if data.index.tz is not None:
+                        data.index = data.index.tz_localize(None)
+                    result = data[['Close']].rename(columns={'Close': ticker})
+                    print(f"✅ {ticker}: Fetched {len(data)} data points")
+                    
+                    # Cache the result
+                    self.cache[cache_key] = (result, time.time())
+                    return result
+                
+                # If no data on this attempt, try again
+                if attempt < retries - 1:
+                    print(f"⚠️ Retry {attempt + 1}/{retries} for {ticker}...")
+                    time.sleep(3)  # Wait before retry
+                    continue
+                    
+            except Exception as e:
+                if attempt < retries - 1:
+                    print(f"⚠️ Error fetching {ticker} (attempt {attempt + 1}/{retries}): {str(e)[:50]}")
+                    time.sleep(3)  # Wait before retry
+                    continue
+                else:
+                    print(f"❌ Failed to fetch {ticker} after {retries} attempts: {str(e)[:50]}")
+        
+        print(f"⚠️ No data available for {ticker} after {retries} attempts")
+        return pd.DataFrame()
     
     def get_fred_data(self, series_id, start_date=DEFAULT_START, end_date=DEFAULT_END):
         """Fetch data from FRED API"""
@@ -253,21 +286,36 @@ class DataFetcher:
             return pd.DataFrame()
     
     def get_market_indicators(self):
-        """Get all market indicators in one call"""
-        print("📡 Fetching data from Yahoo Finance...")
+        """Get all market indicators in one call with sequential fetching to avoid rate limits"""
+        print("📡 Fetching data from APIs...")
         
-        indicators = {
-            'gold': self.get_gold_price(),
-            'silver': self.get_silver_price(),
-            'usdinr': self.get_usdinr(),
-            'real_yield': self.calculate_real_yield(),
-            'dxy': self.get_dxy(),
-            'vix': self.get_vix(),
-            'sp500': self.get_sp500(),
-            'nifty': self.get_nifty(),
-            'gold_silver_ratio': self.calculate_gold_silver_ratio(),
-            'indian_gold': self.calculate_indian_gold_price(),
-        }
+        indicators = {}
+        
+        # Fetch sequentially with delays to avoid rate limiting
+        print("📊 Fetching FRED data (US Treasury, CPI, DXY)...")
+        indicators['real_yield'] = self.calculate_real_yield()
+        time.sleep(1)
+        indicators['dxy'] = self.get_dxy()
+        
+        print("💰 Fetching Yahoo Finance data (Gold, Silver, Currencies)...")
+        time.sleep(2)
+        indicators['gold'] = self.get_gold_price()
+        time.sleep(2)
+        indicators['silver'] = self.get_silver_price()
+        time.sleep(2)
+        indicators['usdinr'] = self.get_usdinr()
+        
+        print("📈 Fetching market indices (VIX, S&P500, NIFTY)...")
+        time.sleep(2)
+        indicators['vix'] = self.get_vix()
+        time.sleep(2)
+        indicators['sp500'] = self.get_sp500()
+        time.sleep(2)
+        indicators['nifty'] = self.get_nifty()
+        
+        print("🔢 Calculating ratios...")
+        indicators['gold_silver_ratio'] = self.calculate_gold_silver_ratio()
+        indicators['indian_gold'] = self.calculate_indian_gold_price()
         
         print("✅ Data fetch complete!")
         return indicators
